@@ -1,5 +1,5 @@
 # Deepseek-from-Scratch
-# RopelessMLA: Multi-Head Latent Attention without Explicit Keys
+# Without RoPE MLA: Multi-Head Latent Attention
 
 ## 📖 Introduction
 
@@ -11,7 +11,7 @@ As transformers evolved, certain computational and memory inefficiencies associa
 
 ## 🎯 Goals of This Module
 
-This repository implements a novel attention mechanism called **Ropeless Multi-Head Latent Attention (RopelessMLA)**. It is designed to:
+This repository implements a novel attention mechanism called **Ropeless Multi-Head Latent Attention (Without RoP MLA)**. It is designed to:
 - Reduce memory usage by eliminating explicit key projections.
 - Reuse a pre-computed key projection pipeline (`absorbed_k`) to simplify attention calculations.
 - Maintain head diversity without requiring per-head keys.
@@ -27,10 +27,17 @@ In the vanilla Transformer, each token is projected into **queries (Q)**, **keys
 
 Attention(Q, K, V) = softmax(QKᵀ / √d_k) V
 
+This is done because Query, Key, and Value are learned projections of the original embeddings — they help the model learn different roles for tokens in the attention mechanism.
+
+- If we just do dot product of token embeddings, all tokens treat each other the same way.
+- But in attention, we want each token to act differently as a query (seeking info) and as a key/value (providing info).
+- So we use learned linear layers (W_Q, W_K, W_V) to transform the embeddings into Q, K, V → this gives the model flexibility to learn what to attend to and how.
 
 
 - **Multi-head** variants split the model dimension `d_model` into `n_heads` subspaces to allow each head to learn distinct semantic relationships.
 - However, this architecture has high memory and compute costs — especially with long sequences or during autoregressive inference.
+- Also, same computations are repeated for multiple times.
+- We have observed that.. the main goal is to predict the next word token. So, for that we only need the last context vector of the sequence
 
 ---
 
@@ -38,17 +45,18 @@ Attention(Q, K, V) = softmax(QKᵀ / √d_k) V
 
 #### 🔍 Problem
 During inference (especially for autoregressive generation), recomputing K and V for all tokens at every step is:
-- **Redundant**: Past tokens’ keys and values don't change.
+- **Redundant**: Past tokens’ keys and values don't change. Repeatative Calculations
 - **Inefficient**: Time and memory wasted per decoding step.
 
 #### ✅ Solution
 **KV Caching** was introduced:
 - Cache the key/value representations of past tokens.
 - At each new decoding step, only compute K/V for the current token and append to cache.
+- A time complexity change of inferencing occur. i.e, from quadratic drops to linear.
 
 #### ⚠️ Drawbacks
-- Per-head key/value storage scales poorly with the number of heads.
-- In deployment scenarios (e.g., LLM inference), memory usage is a bottleneck.
+- A huge amount of cache memory is being required due to which other computations get affected.
+- Due to this, the inferencing time is reducing but in the cost, we need more data storages. for eg: 400gb in deepseek.
 
 ---
 
@@ -70,13 +78,16 @@ To reduce memory footprint:
 
 MHLA introduces a **latent key-value space**:
 - Keys are not computed per token directly.
+- Using the latent projection, we calculate the keys and values matrix
 - Instead, tokens are projected into a **latent representation** (`latent_dim`), then mapped into key and value spaces via fixed projections.
+- Here, the caching size also is reducing as we are caching only one matrix (which was two in prev case) which has lesser dimension than those two.
+- So, indeed reducing the size
 
 ### ✅ Benefits
 - **Head-specific Queries**, but **shared latent space** for keys and values.
 - Significantly **reduces memory usage**.
 - **Head diversity preserved** using pre-computed absorbed keys.
-- **No need to store raw K matrices**, hence **"ropeless"**.
+- **No need to store raw K matrices**.
 
 ---
 
@@ -107,7 +118,7 @@ absorbed_k: Pre-computed W_q @ W_uk to avoid redundant computation.
 out, kv_cache = model(x, kv_cache=past_kv, past_length=offset)
 ```
 🔄 Step-by-Step
-1. Precompute Key Projection (absorbed_k): Compute W_q @ W_uk once, store as buffer per head: [H, dh, latent_dim].
+1. Precompute Key Projection (absorbed_k): Compute W_q @ W_uk once. Concept of absorbed query.
 
 2. Latent Encoding: Project input x to latent_dim via W_dkv.
 
@@ -129,7 +140,7 @@ out, kv_cache = model(x, kv_cache=past_kv, past_length=offset)
 
 11. Compute softmax scores and apply to values for output.
 
-12 Concatenate Heads: Final output is [B, S, D].
+12. Concatenate Heads: Final output is [B, S, D].
 
 
 <table>
